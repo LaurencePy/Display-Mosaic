@@ -4,16 +4,16 @@
 
 Per-monitor wallpaper and VS Code theme switcher for Windows 10 and Windows 11.
 
-DisplayMosaic lets you assign one wallpaper and VS Code theme preset to a designated primary/OLED monitor (matched by EDID model name or display code) and a separate preset to every other connected monitor (such as a laptop panel or secondary displays). It runs quietly in the taskbar hidden icons area, automatically re-applies presets when monitors are plugged or unplugged, and updates your VS Code theme in real time as you move your VS Code window between screens.
+DisplayMosaic lets you assign a distinct wallpaper, optional nickname, and VS Code color theme to every connected monitor (whether you have one laptop screen, three side-by-side monitors, or a mix of OLED and standard displays). It runs quietly in the taskbar hidden icons area, automatically re-applies presets when monitors are plugged or unplugged, and updates your VS Code theme in real time as you move your VS Code window between screens.
 
 ---
 
 ## What It Does
 
-- **Distinct Wallpapers per Monitor** — Uses Windows' native `IDesktopWallpaper` COM API to set individual wallpapers across monitors (e.g., a pure-black or dark image on an OLED monitor and a standard wallpaper on all other monitors) with configurable fit mode (`Fill`, `Fit`, `Stretch`, `Tile`, `Center`, `Span`).
-- **Dynamic VS Code Theme Switching** — Tracks which monitor your active VS Code / VS Code Insiders window is on and updates `workbench.colorTheme` in `settings.json` accordingly (with debouncing so dragging across screens doesn't flicker).
-- **Automatic Display Hot-Plug Handling** — Monitors connected displays in the background and re-applies wallpapers and multi-monitor taskbar settings (`Show taskbar apps on: All taskbars`) whenever monitors are connected, disconnected, or woken from sleep.
-- **Monitor Identification** — Queries EDID friendly names via WMI (`WmiMonitorID`) and provides an **Identify** overlay displaying large monitor numbers on each screen.
+- **Distinct Wallpapers per Monitor** — Uses Windows' native `IDesktopWallpaper` COM API to set individual wallpapers for each connected monitor (identified by its unique Windows display path) with configurable fit mode (`Fill`, `Fit`, `Stretch`, `Tile`, `Center`, `Span`) and a live visual arrangement preview.
+- **Per-Monitor VS Code Theme Switching** — Tracks which monitor your active VS Code / VS Code Insiders window is on and updates `workbench.colorTheme` in `settings.json` to that monitor's configured theme (with debouncing so dragging across screens doesn't flicker).
+- **Automatic Display Hot-Plug Handling** — Monitors connected displays in the background and re-applies wallpapers (and optionally keeps `Show taskbar apps on: All taskbars` enabled) whenever monitors are connected, disconnected, or woken from sleep.
+- **Monitor Identification & Visual Map** — Queries EDID friendly names via WMI (`WmiMonitorID`), renders a clickable spatial map of your screens with wallpaper previews, and provides an **Identify Screens** overlay showing monitor numbers, names, and resolutions.
 - **System Tray & Auto-Start** — Starts minimised in the taskbar hidden icons area at Windows sign-in. Closing or minimising the Settings window sends it back to the tray instead of quitting.
 
 ---
@@ -28,9 +28,8 @@ DisplayMosaic lets you assign one wallpaper and VS Code theme preset to a design
 ---
 
 ## Installation
-### Option 0: Download exe from release
 
-### Option 1: One-Click Install / Reinstall
+### Option 1: One-Click Install / Reinstall (Recommended)
 
 Clone or download this repository to a permanent folder on your PC (for example `C:\Tools\DisplayMosaic`), then double-click **`Install.cmd`** (or run it from a terminal):
 
@@ -116,9 +115,9 @@ powershell -ExecutionPolicy Bypass -File .\Install.ps1 -NoStartup -NoLaunch
 ### Graphical Interface & System Tray
 
 - **First run / Settings:** Double-click `DisplayMosaic.exe` (or click its icon in the taskbar hidden icons area) to open the **Settings** window.
-- **Identify monitors:** Click **Identify** to flash monitor numbers across each connected display, then enter the **OLED monitor (model name or code)** (e.g., `MO27Q28G` or `GBT273C`).
-- **Configure presets:** Choose a wallpaper image and VS Code theme name (as shown in VS Code's `Ctrl+K Ctrl+T` theme picker) for the matched OLED monitor and for all other monitors.
-- **Save & apply:** Saves your configuration and immediately applies wallpapers and theme settings.
+- **Select any connected monitor:** Pick a monitor from the **Select monitor** dropdown, click its screen in the visual monitor arrangement map at the top, or click its row in the overview table. Click **Identify Screens** to flash monitor numbers and model names across each physical display.
+- **Configure each monitor:** Give the monitor an optional nickname, choose a wallpaper image (browse, drag-and-drop, or click **Use Current** to capture its current Windows wallpaper) with a live preview, and pick a VS Code theme name (as shown in VS Code's `Ctrl+K Ctrl+T` theme picker). You can also configure a **Default preset** for newly plugged-in monitors.
+- **Save & Apply:** Saves your configuration and immediately applies wallpapers and theme settings across all connected monitors.
 - **Tray menu (right-click the tray icon):**
   - **Open Settings**
   - **Apply Presets Now**
@@ -134,20 +133,39 @@ Settings are stored per-user in:
 %APPDATA%\DisplayMosaic\profiles.json
 ```
 
+Legacy v1 (`oledMatch` / `oled` / `other`) profiles are migrated automatically on load.
+
 Example:
 
 ```json
 {
+  "version": 2,
   "position": "Fill",
-  "oledMatch": "MO27Q28G",
-  "oled": {
-    "image": "C:\\Wallpapers\\oled-black.jpg",
-    "theme": "Dark+ Pure Black (OLED)"
+  "updateTaskbars": true,
+  "default": {
+    "image": "",
+    "theme": ""
   },
-  "other": {
-    "image": "C:\\Wallpapers\\desktop.png",
-    "theme": "Default Dark Modern"
-  }
+  "monitors": [
+    {
+      "id": "\\\\?\\DISPLAY#GBT273C#5&...#{...}",
+      "code": "GBT273C",
+      "model": "MO27Q28G",
+      "name": "Center Display",
+      "image": "C:\\Wallpapers\\oled-black.jpg",
+      "theme": "Dark+ Pure Black (OLED)",
+      "lastResolution": "2560x1440"
+    },
+    {
+      "id": "\\\\?\\DISPLAY#DEL4251#5&...#{...}",
+      "code": "DEL4251",
+      "model": "DELL U2723QE",
+      "name": "Left Display",
+      "image": "C:\\Wallpapers\\desktop.png",
+      "theme": "Default Dark Modern",
+      "lastResolution": "3840x2160"
+    }
+  ]
 }
 ```
 
@@ -159,9 +177,9 @@ Example:
 DisplayMosaic.exe [options]
   (no args)          Opens Settings and stays minimised in taskbar hidden icons
   --minimized        Starts minimised in taskbar hidden icons and watches monitors
-  --list             Shows connected monitors, OLED match, VS Code monitor, and presets
+  --list             Shows connected monitors, VS Code monitor, and presets
   --list-themes      Lists installed VS Code theme names
-  --set              Updates presets (-Preset Oled|Other -Image <path> -Theme <name> -OledMatch <id> -Position <Fill|Fit|...>)
+  --set              Updates presets (-Monitor <#|code|model|Default> -Image <path> -Theme <name> -Name <label> -Position <Fill|Fit|...>)
   --apply            Applies current presets once
   --install-startup  Installs Startup shortcut to run minimised at sign-in
   --remove-startup   Removes Startup shortcut
