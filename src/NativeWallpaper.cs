@@ -57,7 +57,7 @@ namespace DisplayMosaic
         public int Index;
         public string Id;
         public string Model;
-        public bool IsOled;
+        public bool IsPrimary;
         public int Left;
         public int Top;
         public int Width;
@@ -154,6 +154,7 @@ namespace DisplayMosaic
 
                 MonitorInfo m = new MonitorInfo();
                 m.Id = id;
+                m.IsPrimary = (r.Left == 0 && r.Top == 0);
                 m.Left = r.Left;
                 m.Top = r.Top;
                 m.Width = r.Right - r.Left;
