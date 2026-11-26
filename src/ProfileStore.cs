@@ -17,21 +17,107 @@ namespace DisplayMosaic
             Image = "";
             Theme = "";
         }
+
+        public PresetConfig Clone()
+        {
+            return new PresetConfig
+            {
+                Image = Image ?? "",
+                Theme = Theme ?? ""
+            };
+        }
+
+        public bool IsEmpty()
+        {
+            return string.IsNullOrWhiteSpace(Image) && string.IsNullOrWhiteSpace(Theme);
+        }
+    }
+
+    public class MonitorPreset
+    {
+        public string Id { get; set; }
+        public string Code { get; set; }
+        public string Model { get; set; }
+        public string Name { get; set; }
+        public string Image { get; set; }
+        public string Theme { get; set; }
+        public string LastResolution { get; set; }
+
+        public MonitorPreset()
+        {
+            Id = "";
+            Code = "";
+            Model = "";
+            Name = "";
+            Image = "";
+            Theme = "";
+            LastResolution = "";
+        }
+
+        public MonitorPreset Clone()
+        {
+            return new MonitorPreset
+            {
+                Id = Id ?? "",
+                Code = Code ?? "",
+                Model = Model ?? "",
+                Name = Name ?? "",
+                Image = Image ?? "",
+                Theme = Theme ?? "",
+                LastResolution = LastResolution ?? ""
+            };
+        }
+
+        public bool HasCustomSettings()
+        {
+            return !string.IsNullOrWhiteSpace(Name)
+                || !string.IsNullOrWhiteSpace(Image)
+                || !string.IsNullOrWhiteSpace(Theme);
+        }
     }
 
     public class AppProfile
     {
+        public int Version { get; set; }
         public string Position { get; set; }
-        public string OledMatch { get; set; }
-        public PresetConfig Oled { get; set; }
-        public PresetConfig Other { get; set; }
+        public bool UpdateTaskbars { get; set; }
+        public PresetConfig Default { get; set; }
+        public List<MonitorPreset> Monitors { get; set; }
+
+        // Legacy v1 migration fields (in-memory only once migrated)
+        public bool LoadedFromLegacy { get; set; }
+        public string LegacyOledMatch { get; set; }
+        public PresetConfig LegacyOled { get; set; }
 
         public AppProfile()
         {
+            Version = 2;
             Position = "Fill";
-            OledMatch = "";
-            Oled = new PresetConfig();
-            Other = new PresetConfig();
+            UpdateTaskbars = true;
+            Default = new PresetConfig();
+            Monitors = new List<MonitorPreset>();
+            LegacyOledMatch = "";
+            LegacyOled = new PresetConfig();
+        }
+
+        public AppProfile Clone()
+        {
+            AppProfile copy = new AppProfile();
+            copy.Version = Version;
+            copy.Position = Position ?? "Fill";
+            copy.UpdateTaskbars = UpdateTaskbars;
+            copy.Default = Default != null ? Default.Clone() : new PresetConfig();
+            copy.LoadedFromLegacy = LoadedFromLegacy;
+            copy.LegacyOledMatch = LegacyOledMatch ?? "";
+            copy.LegacyOled = LegacyOled != null ? LegacyOled.Clone() : new PresetConfig();
+            if (Monitors != null)
+            {
+                foreach (MonitorPreset mp in Monitors)
+                {
+                    if (mp != null) copy.Monitors.Add(mp.Clone());
+                }
+            }
+            return copy;
         }
     }
 
@@ -93,11 +179,51 @@ namespace DisplayMosaic
                 string pos = GetString(dict, "position");
                 if (!string.IsNullOrEmpty(pos)) profile.Position = pos;
 
-                string oledMatch = GetString(dict, "oledMatch");
-                if (!string.IsNullOrEmpty(oledMatch)) profile.OledMatch = oledMatch;
+                object updateTaskbarsObj;
+                if (dict.TryGetValue("updateTaskbars", out updateTaskbarsObj) && updateTaskbarsObj is bool)
+                {
+                    profile.UpdateTaskbars = (bool)updateTaskbarsObj;
+                }
 
-                ReadPreset(dict, "oled", profile.Oled);
-                ReadPreset(dict, "other", profile.Other);
+                if (dict.ContainsKey("monitors") || dict.ContainsKey("default"))
+                {
+                    profile.Version = 2;
+                    ReadPreset(dict, "default", profile.Default);
+
+                    object monitorsObj;
+                    if (dict.TryGetValue("monitors", out monitorsObj))
+                    {
+                        object[] arr = monitorsObj as object[];
+                        if (arr != null)
+                        {
+                            foreach (object item in arr)
+                            {
+                                Dictionary<string, object> mDict = item as Dictionary<string, object>;
+                                if (mDict == null) continue;
+                                string id = GetString(mDict, "id");
+                                if (string.IsNullOrEmpty(id)) continue;
+
+                                MonitorPreset mp = new MonitorPreset();
+                                mp.Id = id;
+                                mp.Code = GetString(mDict, "code") ?? "";
+                                mp.Model = GetString(mDict, "model") ?? "";
+                                mp.Name = GetString(mDict, "name") ?? "";
+                                mp.Image = GetString(mDict, "image") ?? "";
+                                mp.Theme = GetString(mDict, "theme") ?? "";
+                                mp.LastResolution = GetString(mDict, "lastResolution") ?? "";
+                                profile.Monitors.Add(mp);
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    // Migrate legacy v1 profile (oledMatch / oled / other)
+                    profile.LoadedFromLegacy = true;
+                    profile.LegacyOledMatch = GetString(dict, "oledMatch") ?? "";
+                    ReadPreset(dict, "oled", profile.LegacyOled);
+                    ReadPreset(dict, "other", profile.Default);
+                }
             }
             catch (Exception ex)
             {
@@ -110,23 +236,144 @@ namespace DisplayMosaic
             return profile;
         }
 
+        public static void EnsureLegacyMigration(AppProfile profile, MonitorInfo[] monitors)
+        {
+            if (profile == null || !profile.LoadedFromLegacy || monitors == null) return;
+
+            foreach (MonitorInfo m in monitors)
+            {
+                if (m == null || string.IsNullOrEmpty(m.Id)) continue;
+                if (FindMonitorPreset(profile, m.Id) != null) continue;
+
+                PresetConfig src = MatchesPattern(m, profile.LegacyOledMatch) ? profile.LegacyOled : profile.Default;
+                if (src == null || src.IsEmpty()) continue;
+
+                MonitorPreset mp = new MonitorPreset();
+                mp.Id = m.Id;
+                mp.Code = MonitorService.GetMonitorCode(m.Id);
+                mp.Model = m.Model ?? "";
+                mp.LastResolution = string.Format("{0}x{1}", m.Width, m.Height);
+                mp.Image = src.Image ?? "";
+                mp.Theme = src.Theme ?? "";
+                profile.Monitors.Add(mp);
+            }
+
+            profile.LoadedFromLegacy = false;
+        }
+
+        public static MonitorPreset FindMonitorPreset(AppProfile profile, string monitorId)
+        {
+            if (profile == null || profile.Monitors == null || string.IsNullOrEmpty(monitorId)) return null;
+            foreach (MonitorPreset mp in profile.Monitors)
+            {
+                if (mp != null && string.Equals(mp.Id, monitorId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return mp;
+                }
+            }
+            return null;
+        }
+
+        public static MonitorPreset GetOrCreateMonitorPreset(AppProfile profile, MonitorInfo monitor)
+        {
+            if (profile == null || monitor == null || string.IsNullOrEmpty(monitor.Id)) return null;
+            MonitorPreset mp = FindMonitorPreset(profile, monitor.Id);
+            if (mp == null)
+            {
+                mp = new MonitorPreset();
+                mp.Id = monitor.Id;
+                profile.Monitors.Add(mp);
+            }
+
+            mp.Code = MonitorService.GetMonitorCode(monitor.Id);
+            mp.Model = monitor.Model ?? "";
+            mp.LastResolution = string.Format("{0}x{1}", monitor.Width, monitor.Height);
+            return mp;
+        }
+
+        public static PresetConfig ResolvePreset(AppProfile profile, MonitorInfo monitor)
+        {
+            if (profile == null) return new PresetConfig();
+
+            if (monitor != null)
+            {
+                MonitorPreset mp = FindMonitorPreset(profile, monitor.Id);
+                if (mp != null)
+                {
+                    return new PresetConfig
+                    {
+                        Image = mp.Image ?? "",
+                        Theme = mp.Theme ?? ""
+                    };
+                }
+
+                if (profile.LoadedFromLegacy && MatchesPattern(monitor, profile.LegacyOledMatch))
+                {
+                    return profile.LegacyOled != null ? profile.LegacyOled.Clone() : new PresetConfig();
+                }
+            }
+
+            return profile.Default != null ? profile.Default.Clone() : new PresetConfig();
+        }
+
+        public static bool MatchesPattern(MonitorInfo m, string match)
+        {
+            if (m == null || string.IsNullOrEmpty(match)) return false;
+            string code = MonitorService.GetMonitorCode(m.Id);
+            if (string.Equals(code, match, StringComparison.OrdinalIgnoreCase)) return true;
+            string model = m.Model ?? "";
+            return model.IndexOf(match, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         public static void Save(AppProfile profile)
         {
             Directory.CreateDirectory(ProfileDir);
             JavaScriptSerializer ser = new JavaScriptSerializer();
 
+            List<MonitorPreset> toSave = new List<MonitorPreset>();
+            if (profile.Monitors != null)
+            {
+                foreach (MonitorPreset mp in profile.Monitors)
+                {
+                    if (mp != null && !string.IsNullOrEmpty(mp.Id) && mp.HasCustomSettings())
+                    {
+                        toSave.Add(mp);
+                    }
+                }
+            }
+
             StringBuilder sb = new StringBuilder();
             sb.AppendLine("{");
+            sb.AppendFormat("  \"version\": 2,\r\n");
             sb.AppendFormat("  \"position\": {0},\r\n", ser.Serialize(profile.Position ?? "Fill"));
-            sb.AppendFormat("  \"oledMatch\": {0},\r\n", ser.Serialize(profile.OledMatch ?? ""));
-            sb.AppendLine("  \"oled\": {");
-            sb.AppendFormat("    \"image\": {0},\r\n", ser.Serialize((profile.Oled != null ? profile.Oled.Image : "") ?? ""));
-            sb.AppendFormat("    \"theme\": {0}\r\n", ser.Serialize((profile.Oled != null ? profile.Oled.Theme : "") ?? ""));
+            sb.AppendFormat("  \"updateTaskbars\": {0},\r\n", profile.UpdateTaskbars ? "true" : "false");
+            sb.AppendLine("  \"default\": {");
+            sb.AppendFormat("    \"image\": {0},\r\n", ser.Serialize((profile.Default != null ? profile.Default.Image : "") ?? ""));
+            sb.AppendFormat("    \"theme\": {0}\r\n", ser.Serialize((profile.Default != null ? profile.Default.Theme : "") ?? ""));
             sb.AppendLine("  },");
-            sb.AppendLine("  \"other\": {");
-            sb.AppendFormat("    \"image\": {0},\r\n", ser.Serialize((profile.Other != null ? profile.Other.Image : "") ?? ""));
-            sb.AppendFormat("    \"theme\": {0}\r\n", ser.Serialize((profile.Other != null ? profile.Other.Theme : "") ?? ""));
-            sb.AppendLine("  }");
+            sb.Append("  \"monitors\": [");
+            if (toSave.Count == 0)
+            {
+                sb.AppendLine("]");
+            }
+            else
+            {
+                sb.AppendLine();
+                for (int i = 0; i < toSave.Count; i++)
+                {
+                    MonitorPreset mp = toSave[i];
+                    sb.AppendLine("    {");
+                    sb.AppendFormat("      \"id\": {0},\r\n", ser.Serialize(mp.Id ?? ""));
+                    sb.AppendFormat("      \"code\": {0},\r\n", ser.Serialize(mp.Code ?? ""));
+                    sb.AppendFormat("      \"model\": {0},\r\n", ser.Serialize(mp.Model ?? ""));
+                    sb.AppendFormat("      \"name\": {0},\r\n", ser.Serialize(mp.Name ?? ""));
+                    sb.AppendFormat("      \"image\": {0},\r\n", ser.Serialize(mp.Image ?? ""));
+                    sb.AppendFormat("      \"theme\": {0},\r\n", ser.Serialize(mp.Theme ?? ""));
+                    sb.AppendFormat("      \"lastResolution\": {0}\r\n", ser.Serialize(mp.LastResolution ?? ""));
+                    sb.Append(i + 1 < toSave.Count ? "    },\r\n" : "    }\r\n");
+                }
+                sb.AppendLine("  ]");
+            }
             sb.AppendLine("}");
 
             File.WriteAllText(ProfilePath, sb.ToString(), new UTF8Encoding(false));
@@ -295,22 +542,20 @@ namespace DisplayMosaic
 
         public static void ApplyVsCodeTheme(AppProfile profile, MonitorInfo[] monitors, MonitorInfo target, Action<string> log, Action<string> warn)
         {
-            bool hasOled = false;
-            if (target != null)
+            MonitorInfo effectiveTarget = target;
+            if (effectiveTarget == null && monitors != null && monitors.Length == 1)
             {
-                hasOled = target.IsOled;
-            }
-            else if (monitors != null)
-            {
-                foreach (MonitorInfo m in monitors)
-                {
-                    if (m.IsOled) { hasOled = true; break; }
-                }
+                effectiveTarget = monitors[0];
             }
 
-            string theme = hasOled
-                ? (profile.Oled != null ? profile.Oled.Theme : "")
-                : (profile.Other != null ? profile.Other.Theme : "");
+            if (effectiveTarget == null) return;
+
+            PresetConfig preset = ProfileStore.ResolvePreset(profile, effectiveTarget);
+            ApplyVsCodeTheme(preset != null ? preset.Theme : "", log, warn);
+        }
+
+        public static void ApplyVsCodeTheme(string theme, Action<string> log, Action<string> warn)
+        {
             if (string.IsNullOrEmpty(theme)) return;
 
             JavaScriptSerializer ser = new JavaScriptSerializer();
