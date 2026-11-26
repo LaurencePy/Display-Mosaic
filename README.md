@@ -28,8 +28,9 @@ DisplayMosaic lets you assign one wallpaper and VS Code theme preset to a design
 ---
 
 ## Installation
+### Option 0: Download exe from release
 
-### Option 1: One-Click Install / Reinstall (Recommended)
+### Option 1: One-Click Install / Reinstall
 
 Clone or download this repository to a permanent folder on your PC (for example `C:\Tools\DisplayMosaic`), then double-click **`Install.cmd`** (or run it from a terminal):
 
