@@ -25,7 +25,9 @@ namespace DisplayMosaic
             bool removeStartup = false;
             bool help = false;
 
+            string monitorArg = null;
             string preset = null;
+            string name = null;
             string image = null;
             string theme = null;
             string oledMatch = null;
@@ -55,16 +57,24 @@ namespace DisplayMosaic
                     case "help":
                     case "h":
                     case "?": help = true; break;
+                    case "monitor":
+                        if (i + 1 >= args.Length) return Fail("-Monitor requires a monitor number, code, model, ID, or 'Default'.");
+                        monitorArg = args[++i];
+                        break;
                     case "preset":
                         if (i + 1 >= args.Length) return Fail("-Preset requires a value (Oled or Other).");
                         preset = args[++i];
                         break;
+                    case "name":
+                        if (i + 1 >= args.Length) return Fail("-Name requires a label.");
+                        name = args[++i];
+                        break;
                     case "image":
-                        if (i + 1 >= args.Length) return Fail("-Image requires a file path.");
+                        if (i + 1 >= args.Length) return Fail("-Image requires a file path (or empty string to clear).");
                         image = args[++i];
                         break;
                     case "theme":
-                        if (i + 1 >= args.Length) return Fail("-Theme requires a theme name.");
+                        if (i + 1 >= args.Length) return Fail("-Theme requires a theme name (or empty string to clear).");
                         theme = args[++i];
                         break;
                     case "oledmatch":
@@ -108,7 +118,7 @@ namespace DisplayMosaic
             if (set)
             {
                 Wallpaper.AttachParentConsole();
-                return RunSet(preset, image, theme, oledMatch, position);
+                return RunSet(monitorArg, preset, name, image, theme, oledMatch, position);
             }
 
             if (apply)
@@ -160,55 +170,117 @@ namespace DisplayMosaic
         private static void RunList()
         {
             AppProfile p = ProfileStore.Load(Warn);
-            Console.WriteLine("Profile file: {0}  (fit: {1}; OLED match: '{2}')", ProfileStore.ProfilePath, p.Position, p.OledMatch);
-            Console.WriteLine("OLED preset : image={0}  theme={1}", p.Oled.Image, p.Oled.Theme);
-            Console.WriteLine("Other preset: image={0}  theme={1}", p.Other.Image, p.Other.Theme);
-
-            MonitorInfo[] ms = MonitorService.GetMonitors(p.OledMatch);
+            MonitorInfo[] ms = MonitorService.GetMonitors();
+            ProfileStore.EnsureLegacyMigration(p, ms);
             MonitorInfo vs = MonitorService.GetVsCodeMonitor(ms, false);
+
+            Console.WriteLine("Profile file: {0}  (fit: {1}; update taskbars: {2})", ProfileStore.ProfilePath, p.Position, p.UpdateTaskbars);
+            if (!p.Default.IsEmpty())
+            {
+                Console.WriteLine("Default preset: image={0}  theme={1}", p.Default.Image, p.Default.Theme);
+            }
             Console.WriteLine("VS Code window is on monitor: {0}", vs != null ? "#" + vs.Index : "not found");
             Console.WriteLine();
-            Console.WriteLine("{0,-3} {1,-10} {2,-22} {3,-11} {4,-6} {5}", "#", "Code", "Model", "Resolution", "Preset", "Current");
-            Console.WriteLine(new string('-', 90));
+            Console.WriteLine("{0,-3} {1,-10} {2,-22} {3,-11} {4,-24} {5}", "#", "Code", "Model / Name", "Resolution", "VS Code Theme", "Configured / Current Wallpaper");
+            Console.WriteLine(new string('-', 105));
             foreach (MonitorInfo m in ms)
             {
+                MonitorPreset mp = ProfileStore.FindMonitorPreset(p, m.Id);
+                PresetConfig resolved = ProfileStore.ResolvePreset(p, m);
+                string label = MonitorService.GetDisplayLabel(m, mp);
+                string wp = !string.IsNullOrEmpty(resolved.Image) ? resolved.Image : (m.Wallpaper ?? "");
                 Console.WriteLine(
-                    "{0,-3} {1,-10} {2,-22} {3,-11} {4,-6} {5}",
+                    "{0,-3} {1,-10} {2,-22} {3,-11} {4,-24} {5}",
                     m.Index,
                     MonitorService.GetMonitorCode(m.Id),
-                    m.Model ?? "",
+                    Truncate(label, 22),
                     string.Format("{0}x{1}", m.Width, m.Height),
-                    m.IsOled ? "OLED" : "Other",
-                    m.Wallpaper ?? "");
+                    Truncate(resolved.Theme ?? "", 24),
+                    wp);
             }
         }
 
-        private static int RunSet(string preset, string image, string theme, string oledMatch, string position)
+        private static string Truncate(string value, int maxLen)
+        {
+            if (string.IsNullOrEmpty(value) || value.Length <= maxLen) return value ?? "";
+            return value.Substring(0, maxLen - 1) + "…";
+        }
+
+        private static int RunSet(string monitorArg, string preset, string name, string image, string theme, string oledMatch, string position)
         {
             try
             {
                 AppProfile p = ProfileStore.Load(Warn);
-                if (!string.IsNullOrEmpty(oledMatch)) p.OledMatch = oledMatch;
+                MonitorInfo[] ms = MonitorService.GetMonitors();
+                ProfileStore.EnsureLegacyMigration(p, ms);
+
                 if (!string.IsNullOrEmpty(position))
                 {
                     WallpaperPosition parsedPos = (WallpaperPosition)Enum.Parse(typeof(WallpaperPosition), position, true);
                     p.Position = parsedPos.ToString();
                 }
 
-                if (!string.IsNullOrEmpty(image) || !string.IsNullOrEmpty(theme))
+                string resolvedImage = null;
+                if (image != null)
                 {
-                    if (string.IsNullOrEmpty(preset))
+                    resolvedImage = string.IsNullOrWhiteSpace(image) ? "" : ProfileStore.ResolveImagePath(image);
+                }
+
+                if (name != null || resolvedImage != null || theme != null)
+                {
+                    if (!string.IsNullOrEmpty(monitorArg))
                     {
-                        return Fail("-Image/-Theme need -Preset Oled or -Preset Other.");
+                        if (string.Equals(monitorArg, "Default", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (resolvedImage != null) p.Default.Image = resolvedImage;
+                            if (theme != null) p.Default.Theme = theme.Trim();
+                        }
+                        else
+                        {
+                            MonitorInfo target = FindMonitorByArg(ms, p, monitorArg);
+                            if (target == null)
+                            {
+                                return Fail("No connected monitor matched '" + monitorArg + "'. Run --list to see monitors.");
+                            }
+                            MonitorPreset mp = ProfileStore.GetOrCreateMonitorPreset(p, target);
+                            if (name != null) mp.Name = name.Trim();
+                            if (resolvedImage != null) mp.Image = resolvedImage;
+                            if (theme != null) mp.Theme = theme.Trim();
+                        }
                     }
-
-                    PresetConfig target;
-                    if (string.Equals(preset, "Oled", StringComparison.OrdinalIgnoreCase)) target = p.Oled;
-                    else if (string.Equals(preset, "Other", StringComparison.OrdinalIgnoreCase)) target = p.Other;
-                    else return Fail("Invalid -Preset. Use Oled or Other.");
-
-                    if (!string.IsNullOrEmpty(image)) target.Image = ProfileStore.ResolveImagePath(image);
-                    if (!string.IsNullOrEmpty(theme)) target.Theme = theme;
+                    else if (!string.IsNullOrEmpty(preset))
+                    {
+                        if (string.Equals(preset, "Other", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (resolvedImage != null) p.Default.Image = resolvedImage;
+                            if (theme != null) p.Default.Theme = theme.Trim();
+                        }
+                        else if (string.Equals(preset, "Oled", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string pattern = !string.IsNullOrEmpty(oledMatch) ? oledMatch : p.LegacyOledMatch;
+                            if (string.IsNullOrEmpty(pattern))
+                            {
+                                return Fail("-Preset Oled requires -OledMatch <model|code> or use -Monitor <#|code|model>.");
+                            }
+                            foreach (MonitorInfo m in ms)
+                            {
+                                if (ProfileStore.MatchesPattern(m, pattern))
+                                {
+                                    MonitorPreset mp = ProfileStore.GetOrCreateMonitorPreset(p, m);
+                                    if (resolvedImage != null) mp.Image = resolvedImage;
+                                    if (theme != null) mp.Theme = theme.Trim();
+                                }
+                            }
+                        }
+                        else
+                        {
+                            return Fail("Invalid -Preset. Use -Monitor <#|code|model|Default>.");
+                        }
+                    }
+                    else
+                    {
+                        return Fail("-Image/-Theme/-Name need -Monitor <#|code|model|Default>.");
+                    }
                 }
 
                 ProfileStore.Save(p);
@@ -221,14 +293,50 @@ namespace DisplayMosaic
             }
         }
 
+        private static MonitorInfo FindMonitorByArg(MonitorInfo[] ms, AppProfile p, string query)
+        {
+            int idx;
+            if (int.TryParse(query, out idx))
+            {
+                foreach (MonitorInfo m in ms)
+                {
+                    if (m.Index == idx) return m;
+                }
+                return null;
+            }
+
+            foreach (MonitorInfo m in ms)
+            {
+                if (string.Equals(m.Id, query, StringComparison.OrdinalIgnoreCase)) return m;
+                if (string.Equals(MonitorService.GetMonitorCode(m.Id), query, StringComparison.OrdinalIgnoreCase)) return m;
+            }
+
+            foreach (MonitorInfo m in ms)
+            {
+                MonitorPreset mp = ProfileStore.FindMonitorPreset(p, m.Id);
+                if (mp != null && !string.IsNullOrEmpty(mp.Name) &&
+                    mp.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return m;
+                }
+                if (!string.IsNullOrEmpty(m.Model) &&
+                    m.Model.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return m;
+                }
+            }
+
+            return null;
+        }
+
         private static void PrintHelp()
         {
             Console.WriteLine("DisplayMosaic.exe [options]");
             Console.WriteLine("  (no args)          Opens Settings and stays minimised in taskbar hidden icons");
             Console.WriteLine("  --minimized        Starts minimised in taskbar hidden icons and watches monitors");
-            Console.WriteLine("  --list             Shows connected monitors, OLED match, VS Code monitor, and presets");
+            Console.WriteLine("  --list             Shows connected monitors, VS Code monitor, and presets");
             Console.WriteLine("  --list-themes      Lists installed VS Code theme names");
-            Console.WriteLine("  --set              Updates presets (-Preset Oled|Other -Image <path> -Theme <name> -OledMatch <id> -Position <Fill|Fit|...>)");
+            Console.WriteLine("  --set              Updates presets (-Monitor <#|code|model|Default> -Image <path> -Theme <name> -Name <label> -Position <Fill|Fit|...>)");
             Console.WriteLine("  --apply            Applies current presets once");
             Console.WriteLine("  --install-startup  Installs Startup shortcut to run minimised at sign-in");
             Console.WriteLine("  --remove-startup   Removes Startup shortcut");
