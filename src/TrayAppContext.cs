@@ -18,6 +18,7 @@ namespace DisplayMosaic
         private readonly bool _startupDelay;
 
         private volatile bool _forceApply;
+        private volatile bool _resetThemeTracking;
         private SettingsForm _settingsForm;
         private Thread _watcherThread;
         private Thread _ipcThread;
@@ -134,8 +135,8 @@ namespace DisplayMosaic
             string lastSig = null;
             MonitorInfo[] monitors = new MonitorInfo[0];
             AppProfile p = ProfileStore.Load(null);
-            bool? lastIsOled = null;
-            bool? candidate = null;
+            string lastMonitorId = null;
+            string candidateMonitorId = null;
             WaitHandle[] waitHandles = new WaitHandle[] { _stopEvent, _wakeEvent };
 
             while (true)
@@ -145,13 +146,25 @@ namespace DisplayMosaic
                     if (_forceApply)
                     {
                         _forceApply = false;
+                        _resetThemeTracking = false;
                         p = ProfileStore.Load(null);
-                        monitors = MonitorService.GetMonitors(p.OledMatch);
+                        monitors = MonitorService.GetMonitors();
+                        ProfileStore.EnsureLegacyMigration(p, monitors);
                         lastSig = MonitorService.GetMonitorSignature();
                         MonitorService.ApplyAll(null, null);
-                        lastIsOled = null;
-                        candidate = null;
+                        lastMonitorId = null;
+                        candidateMonitorId = null;
                         NotifySettingsRefreshed();
+                    }
+                    else if (_resetThemeTracking)
+                    {
+                        _resetThemeTracking = false;
+                        p = ProfileStore.Load(null);
+                        monitors = MonitorService.GetMonitors();
+                        ProfileStore.EnsureLegacyMigration(p, monitors);
+                        lastSig = MonitorService.GetMonitorSignature();
+                        lastMonitorId = null;
+                        candidateMonitorId = null;
                     }
                     else if (tick % 2 == 0)
                     {
@@ -166,36 +179,38 @@ namespace DisplayMosaic
                             }
 
                             p = ProfileStore.Load(null);
-                            monitors = MonitorService.GetMonitors(p.OledMatch);
+                            monitors = MonitorService.GetMonitors();
+                            ProfileStore.EnsureLegacyMigration(p, monitors);
                             lastSig = MonitorService.GetMonitorSignature();
                             MonitorService.ApplyAll(null, null);
-                            lastIsOled = null;
-                            candidate = null;
+                            lastMonitorId = null;
+                            candidateMonitorId = null;
                             NotifySettingsRefreshed();
                         }
                         else if (tick % 10 == 0)
                         {
                             p = ProfileStore.Load(null);
-                            monitors = MonitorService.GetMonitors(p.OledMatch);
+                            monitors = MonitorService.GetMonitors();
+                            ProfileStore.EnsureLegacyMigration(p, monitors);
                         }
                     }
 
                     MonitorInfo target = MonitorService.GetVsCodeMonitor(monitors, true);
                     if (target != null)
                     {
-                        if (lastIsOled.HasValue && target.IsOled == lastIsOled.Value)
+                        if (string.Equals(target.Id, lastMonitorId, StringComparison.OrdinalIgnoreCase))
                         {
-                            candidate = null;
+                            candidateMonitorId = null;
                         }
-                        else if (candidate.HasValue && candidate.Value == target.IsOled)
+                        else if (string.Equals(target.Id, candidateMonitorId, StringComparison.OrdinalIgnoreCase))
                         {
                             ThemeService.ApplyVsCodeTheme(p, monitors, target, null, null);
-                            lastIsOled = target.IsOled;
-                            candidate = null;
+                            lastMonitorId = target.Id;
+                            candidateMonitorId = null;
                         }
                         else
                         {
-                            candidate = target.IsOled;
+                            candidateMonitorId = target.Id;
                         }
                     }
                 }
@@ -217,8 +232,8 @@ namespace DisplayMosaic
                     _appIcon,
                     delegate
                     {
-                        // Refresh monitor signature cache when user applies manually
-                        _forceApply = false;
+                        _resetThemeTracking = true;
+                        _wakeEvent.Set();
                     },
                     SyncStartupMenu);
             }
@@ -235,7 +250,7 @@ namespace DisplayMosaic
                     {
                         if (_settingsForm != null && !_settingsForm.IsDisposed && _settingsForm.Visible)
                         {
-                            _settingsForm.RefreshMonitorList();
+                            _settingsForm.RefreshConnectedMonitorsOnly();
                         }
                     });
                 }
