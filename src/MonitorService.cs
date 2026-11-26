@@ -80,16 +80,24 @@ namespace DisplayMosaic
             return sb.ToString();
         }
 
-        public static bool TestOled(MonitorInfo m, string match)
+        public static string GetDisplayLabel(MonitorInfo m, MonitorPreset preset)
         {
-            if (m == null || string.IsNullOrEmpty(match)) return false;
-            string code = GetMonitorCode(m.Id);
-            if (string.Equals(code, match, StringComparison.OrdinalIgnoreCase)) return true;
-            string model = m.Model ?? "";
-            return model.IndexOf(match, StringComparison.OrdinalIgnoreCase) >= 0;
+            if (preset != null && !string.IsNullOrWhiteSpace(preset.Name))
+            {
+                return preset.Name.Trim();
+            }
+            if (m != null && !string.IsNullOrWhiteSpace(m.Model))
+            {
+                return m.Model.Trim();
+            }
+            if (m != null)
+            {
+                return GetMonitorCode(m.Id);
+            }
+            return "Unknown";
         }
 
-        public static MonitorInfo[] GetMonitors(string match)
+        public static MonitorInfo[] GetMonitors()
         {
             MonitorInfo[] ms = Wallpaper.List();
             Array.Sort(ms, delegate(MonitorInfo a, MonitorInfo b)
@@ -111,7 +119,6 @@ namespace DisplayMosaic
                 {
                     m.Model = modelName;
                 }
-                m.IsOled = TestOled(m, match);
             }
 
             return ms;
@@ -177,7 +184,11 @@ namespace DisplayMosaic
         public static void ApplyAll(Action<string> log, Action<string> warn)
         {
             AppProfile p = ProfileStore.Load(warn);
-            MonitorInfo[] monitors = GetMonitors(p.OledMatch);
+            MonitorInfo[] monitors = GetMonitors();
+            if (p.LoadedFromLegacy)
+            {
+                ProfileStore.EnsureLegacyMigration(p, monitors);
+            }
 
             try
             {
@@ -191,7 +202,7 @@ namespace DisplayMosaic
 
             foreach (MonitorInfo m in monitors)
             {
-                PresetConfig preset = m.IsOled ? p.Oled : p.Other;
+                PresetConfig preset = ProfileStore.ResolvePreset(p, m);
                 if (preset == null || string.IsNullOrEmpty(preset.Image)) continue;
                 if (!File.Exists(preset.Image))
                 {
@@ -204,7 +215,9 @@ namespace DisplayMosaic
                     Wallpaper.Set(m.Id, preset.Image);
                     if (log != null)
                     {
-                        log(string.Format("Monitor {0} ({1}): {2}", m.Index, m.IsOled ? "OLED" : "other", preset.Image));
+                        MonitorPreset mp = ProfileStore.FindMonitorPreset(p, m.Id);
+                        string label = GetDisplayLabel(m, mp);
+                        log(string.Format("Monitor {0} ({1}): {2}", m.Index, label, preset.Image));
                     }
                 }
                 catch (Exception ex)
@@ -222,41 +235,81 @@ namespace DisplayMosaic
                 if (warn != null) warn("VS Code theme: " + ex.Message);
             }
 
-            UpdateTaskbars(log, warn);
+            if (p.UpdateTaskbars)
+            {
+                UpdateTaskbars(log, warn);
+            }
         }
 
         public static void IdentifyMonitors()
         {
             AppProfile p = ProfileStore.Load(null);
-            MonitorInfo[] monitors = GetMonitors(p.OledMatch);
+            MonitorInfo[] monitors = GetMonitors();
             foreach (MonitorInfo m in monitors)
             {
+                MonitorPreset mp = ProfileStore.FindMonitorPreset(p, m.Id);
+                string label = GetDisplayLabel(m, mp);
+                string code = GetMonitorCode(m.Id);
+
                 Form overlay = new Form();
                 overlay.FormBorderStyle = FormBorderStyle.None;
                 overlay.StartPosition = FormStartPosition.Manual;
                 overlay.TopMost = true;
                 overlay.ShowInTaskbar = false;
-                overlay.BackColor = Color.FromArgb(30, 30, 30);
-                overlay.Opacity = 0.85;
+                overlay.BackColor = Color.FromArgb(24, 28, 36);
+                overlay.Opacity = 0.88;
                 overlay.Bounds = new Rectangle(m.Left, m.Top, m.Width, m.Height);
 
-                Label lbl = new Label();
-                lbl.Dock = DockStyle.Fill;
-                lbl.TextAlign = ContentAlignment.MiddleCenter;
-                lbl.ForeColor = Color.White;
-                lbl.Font = new Font("Segoe UI", 120f, FontStyle.Bold);
-                lbl.Text = m.Index.ToString();
-                overlay.Controls.Add(lbl);
+                TableLayoutPanel panel = new TableLayoutPanel();
+                panel.Dock = DockStyle.Fill;
+                panel.ColumnCount = 1;
+                panel.RowCount = 4;
+                panel.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+                panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                panel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                panel.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+
+                Label lblNum = new Label();
+                lblNum.AutoSize = true;
+                lblNum.Anchor = AnchorStyles.None;
+                lblNum.ForeColor = Color.White;
+                lblNum.Font = new Font("Segoe UI", 110f, FontStyle.Bold);
+                lblNum.Text = m.Index.ToString();
+
+                Label lblInfo = new Label();
+                lblInfo.AutoSize = true;
+                lblInfo.Anchor = AnchorStyles.None;
+                lblInfo.ForeColor = Color.FromArgb(200, 212, 228);
+                lblInfo.Font = new Font("Segoe UI", 16f, FontStyle.Regular);
+                lblInfo.Text = string.Format("{0} ({1})  •  {2} × {3}{4}",
+                    label,
+                    code,
+                    m.Width,
+                    m.Height,
+                    m.IsPrimary ? "  •  Primary" : "");
+
+                panel.Controls.Add(lblNum, 0, 1);
+                panel.Controls.Add(lblInfo, 0, 2);
+                overlay.Controls.Add(panel);
 
                 System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
-                timer.Interval = 2000;
-                timer.Tick += delegate(object sender, EventArgs e)
+                timer.Interval = 2500;
+                Action closeOverlay = delegate
                 {
                     timer.Stop();
-                    overlay.Close();
-                    overlay.Dispose();
+                    if (!overlay.IsDisposed)
+                    {
+                        overlay.Close();
+                        overlay.Dispose();
+                    }
                     timer.Dispose();
                 };
+
+                timer.Tick += delegate { closeOverlay(); };
+                overlay.Click += delegate { closeOverlay(); };
+                panel.Click += delegate { closeOverlay(); };
+                lblNum.Click += delegate { closeOverlay(); };
+                lblInfo.Click += delegate { closeOverlay(); };
 
                 overlay.Show();
                 timer.Start();
