@@ -1,4 +1,6 @@
 # DisplayMosaic
+<img width="256" height="256" alt="DisplayMosaic" src="https://github.com/user-attachments/assets/53bb12b7-2e8b-4265-9257-d992af47055f" />
+
 
 Per-monitor wallpaper and VS Code theme switcher for Windows 10 and Windows 11.
 
